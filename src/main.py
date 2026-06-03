@@ -1,5 +1,4 @@
 import os
-import sys
 from pathlib import Path
 from dotenv import load_dotenv
 from google import genai
@@ -11,17 +10,6 @@ PROMPT_FILE = Path(__file__).parent / "promt.md"
 
 def load_system_prompt() -> str:
     return PROMPT_FILE.read_text(encoding="utf-8")
-
-
-def read_code_from_console() -> str:
-    print("Wklej fragment kodu do analizy.")
-    print("Kiedy skończysz, wpisz '---' w nowej linii i naciśnij Enter.\n")
-    lines = []
-    for line in sys.stdin:
-        if line.rstrip() == "---":
-            break
-        lines.append(line)
-    return "".join(lines)
 
 
 def analyze_code(code: str) -> str:
@@ -36,16 +24,6 @@ def analyze_code(code: str) -> str:
     return response.text
 
 
-def main():
-    code = read_code_from_console()
-    if not code.strip():
-        print("Nie podano kodu do analizy.")
-        return
-
-    print("\nAnalizuję kod...\n")
-    result = analyze_code(code)
-    print(result)
-
-
 if __name__ == "__main__":
-    main()
+    from gui import App
+    App().mainloop()

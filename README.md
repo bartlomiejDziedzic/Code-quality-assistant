@@ -1,21 +1,21 @@
 # Code Quality Assistant
 
-Asystent analizy kodu oparty na modelu Gemini (Google AI). Wklej fragment kodu, a aplikacja wskaże problemy, zaproponuje refaktoryzację i wygeneruje poprawione pliki.
+A code analysis assistant powered by the Gemini (Google AI) model. Paste a code snippet into the GUI, and the app will identify issues, suggest refactoring, and generate improved files.
 
 ---
 
-## Wymagania
+## Requirements
 
-- Python 3.10 lub nowszy
-- Klucz API Gemini (Google AI Studio)
+- Python 3.10 or newer
+- Gemini API key (Google AI Studio)
 
 ---
 
-## Instalacja
+## Installation
 
-1. **Sklonuj lub pobierz repozytorium**
+1. **Clone or download the repository**
 
-2. **Utwórz i aktywuj wirtualne środowisko**
+2. **Create and activate a virtual environment**
 
    ```bash
    python -m venv .venv
@@ -31,7 +31,7 @@ Asystent analizy kodu oparty na modelu Gemini (Google AI). Wklej fragment kodu, 
    .venv\Scripts\activate.bat
    ```
 
-3. **Zainstaluj zależności**
+3. **Install dependencies**
 
    ```bash
    pip install google-genai python-dotenv
@@ -39,62 +39,46 @@ Asystent analizy kodu oparty na modelu Gemini (Google AI). Wklej fragment kodu, 
 
 ---
 
-## Konfiguracja klucza API
+## API Key Configuration
 
-Aplikacja odczytuje klucz Gemini z pliku `.env` znajdującego się w głównym katalogu projektu.
+The app reads the Gemini key from a `.env` file located in the project root.
 
-1. Utwórz plik `.env` w katalogu `Code-quality-assistant/` (obok folderu `src/`):
+1. Create a `.env` file in the `Code-quality-assistant/` directory (next to the `src/` folder):
 
    ```
-   GEMINI_API_KEY=twój_klucz_tutaj
+   GEMINI_API_KEY=your_key_here
    ```
 
-2. Klucz API pobierzesz bezpłatnie na stronie **Google AI Studio**:
-   `https://aistudio.google.com/app/apikey`
-
-> **Uwaga:** Plik `.env` jest wpisany do `.gitignore` — nigdy nie trafi do repozytorium, więc klucz pozostaje prywatny.
+2. You can get a free API key at **[Google AI Studio](https://aistudio.google.com/app/apikey)**
 
 ---
 
-## Uruchomienie
-
-### Tryb graficzny (GUI)
-
-Uruchamia okno aplikacji z polem do wklejenia kodu i panelem wyników.
-
-```bash
-cd src
-python gui.py
-```
-
-### Tryb konsolowy
-
-Wklej kod bezpośrednio w terminalu.
+## Running the App
 
 ```bash
 cd src
 python main.py
 ```
 
-Po uruchomieniu wklej kod, a gdy skończysz — wpisz `---` w nowej linii i naciśnij Enter.
+This opens the GUI window where you can paste code and view the analysis results.
 
 ---
 
-## Struktura projektu
+## Project Structure
 
 ```
 Code-quality-assistant/
 ├── src/
-│   ├── main.py      # logika analizy + tryb konsolowy
-│   ├── gui.py       # interfejs graficzny (tkinter)
-│   └── promt.md     # systemowy prompt dla modelu
-├── .env             # klucz API (nie commituj!)
+│   ├── main.py      # analysis logic + GUI entry point
+│   ├── gui.py       # graphical interface (tkinter)
+│   └── promt.md     # system prompt for the model
+├── .env             # API key (do not commit!)
 ├── .gitignore
 └── README.md
 ```
 
 ---
 
-## Licencja
+## License
 
-Projekt dostępny na licencji zawartej w pliku [LICENSE](LICENSE).
+This project is available under the license found in the [LICENSE](LICENSE) file.
