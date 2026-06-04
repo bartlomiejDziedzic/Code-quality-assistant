@@ -20,10 +20,16 @@ def analyze_code(code: str) -> str:
     response = client.models.generate_content(
         model="gemini-3.5-flash",
         contents=full_prompt,
+        config={"max_output_tokens": 65536},
     )
-    return response.text
+    text = response.text
+    print(f"[API] response length: {len(text)} chars")
+    print("[API] raw response:\n" + "=" * 60)
+    print(text)
+    print("=" * 60)
+    return text
 
 
 if __name__ == "__main__":
-    from gui import App
-    App().mainloop()
+    from gui import App, CodeAnalysisService
+    App(CodeAnalysisService(analyze_code)).mainloop()
