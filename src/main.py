@@ -31,5 +31,5 @@ def analyze_code(code: str) -> str:
 
 
 if __name__ == "__main__":
-    from gui import App
-    App().mainloop()
+    from gui import App, CodeAnalysisService
+    App(CodeAnalysisService(analyze_code)).mainloop()

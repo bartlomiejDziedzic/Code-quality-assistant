@@ -6,6 +6,10 @@ from dataclasses import dataclass
 from typing import Callable, List, Tuple, Dict, Any, Optional
 from tkinter import font, messagebox
 
+from pygments import lex
+from pygments.lexers import get_lexer_by_name, get_lexer_for_filename, guess_lexer, TextLexer
+from pygments.token import Token
+
 # Set up logging for professional error diagnosis
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 
@@ -112,13 +116,90 @@ class CodeAnalysisService:
 
     def analyze(self, source_code: str) -> str:
         if not source_code.strip():
-            raise ValueError("Kod wejściowy jest pusty.")
+            raise ValueError("Input code is empty.")
         return self._analyze_func(source_code)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
 # 3. Presenter & Rendering Utilities
 # ─────────────────────────────────────────────────────────────────────────────
+
+class SyntaxHighlighter:
+    """Shared pygments→tkinter syntax-highlighting utility.
+
+    Tk text tags are scoped per widget, so the same tag names can carry
+    different styling in the Markdown panes (code-block background + margins)
+    and in the IDE-style CodeCanvas (plain editor background)."""
+
+    # Maps pygments token base types to tag names
+    _TOKEN_MAP: Dict[Any, str] = {
+        Token.Keyword:            'syn_keyword',
+        Token.Name.Builtin:       'syn_builtin',
+        Token.Name.Function:      'syn_function',
+        Token.Name.Class:         'syn_class',
+        Token.Name.Decorator:     'syn_decorator',
+        Token.String:             'syn_string',
+        Token.Number:             'syn_number',
+        Token.Comment:            'syn_comment',
+        Token.Operator:           'syn_operator',
+        Token.Punctuation:        'syn_punct',
+    }
+
+    # tag name -> (foreground colour, italic?)  — Catppuccin Mocha palette
+    _PALETTE: Dict[str, Tuple[str, bool]] = {
+        'syn_keyword':   ('#cba6f7', False),
+        'syn_builtin':   ('#f38ba8', False),
+        'syn_function':  ('#89b4fa', False),
+        'syn_class':     ('#f9e2af', False),
+        'syn_decorator': ('#fab387', False),
+        'syn_string':    ('#a6e3a1', False),
+        'syn_number':    ('#fab387', False),
+        'syn_comment':   ('#585b70', True),
+        'syn_operator':  ('#89dceb', False),
+        'syn_punct':     ('#cdd6f4', False),
+    }
+
+    @classmethod
+    def token_to_tag(cls, ttype: Any) -> Optional[str]:
+        while ttype is not Token and ttype:
+            if ttype in cls._TOKEN_MAP:
+                return cls._TOKEN_MAP[ttype]
+            ttype = ttype.parent
+        return None
+
+    @classmethod
+    def configure_tags(cls, widget: tk.Text, size: int, background: str, **extra: Any) -> None:
+        regular = font.Font(family='Consolas', size=size)
+        italic = font.Font(family='Consolas', size=size, slant='italic')
+        for tag, (color, is_italic) in cls._PALETTE.items():
+            widget.tag_configure(
+                tag, font=italic if is_italic else regular,
+                foreground=color, background=background, **extra
+            )
+
+    @staticmethod
+    def lexer_for(name: Optional[str] = None, lang: Optional[str] = None, code: str = ''):
+        try:
+            if lang:
+                return get_lexer_by_name(lang, stripall=False)
+            if name:
+                return get_lexer_for_filename(name, stripall=False)
+        except Exception:
+            pass
+        try:
+            if code.strip():
+                return guess_lexer(code)
+        except Exception:
+            pass
+        return TextLexer()
+
+    @classmethod
+    def insert_highlighted(cls, widget: tk.Text, code: str, lexer,
+                           fallback_tag: Optional[str] = None) -> None:
+        for ttype, value in lex(code, lexer):
+            tag = cls.token_to_tag(ttype) or fallback_tag
+            widget.insert(tk.END, value, (tag,) if tag else ())
+
 
 class MarkdownRenderer:
     """Renders formatted Markdown tags inside tk.Text widgets."""
@@ -128,7 +209,7 @@ class MarkdownRenderer:
     def configure_tags(cls, widget: tk.Text, base_font: font.Font) -> None:
         family = base_font.cget('family')
         size = int(base_font.cget('size'))
-        
+
         widget.tag_configure(
             'h3',
             font=font.Font(family=family, size=size + 2, weight='bold'),
@@ -152,9 +233,33 @@ class MarkdownRenderer:
             font=font.Font(family='Consolas', size=size),
             background=Theme.MD_CODE_BG, foreground=Theme.MD_CODE_FG
         )
+        widget.tag_configure(
+            'code_block',
+            font=font.Font(family='Consolas', size=size),
+            background=Theme.MD_CODE_BG, foreground=Theme.FG,
+            lmargin1=12, lmargin2=12, spacing1=1, spacing3=1
+        )
+        widget.tag_configure(
+            'code_lang',
+            font=font.Font(family='Consolas', size=size - 1, slant='italic'),
+            background=Theme.GUTTER_BG, foreground=Theme.GUTTER_FG,
+            lmargin1=12, spacing1=4, spacing3=2
+        )
+
+        # Syntax-highlight colour tags (code-block background + margins)
+        SyntaxHighlighter.configure_tags(
+            widget, size, Theme.MD_CODE_BG,
+            lmargin1=12, lmargin2=12, spacing1=1, spacing3=1
+        )
+
         widget.tag_configure('sep', foreground=Theme.MD_SEP)
         widget.tag_configure('bullet', lmargin1=6, lmargin2=18)
         widget.tag_configure('nested', lmargin1=22, lmargin2=36)
+
+    @classmethod
+    def _highlight_block(cls, widget: tk.Text, code: str, lang: str) -> None:
+        lexer = SyntaxHighlighter.lexer_for(lang=lang)
+        SyntaxHighlighter.insert_highlighted(widget, code, lexer, fallback_tag='code_block')
 
     @classmethod
     def _render_inline(cls, widget: tk.Text, text: str, *extra_tags: str) -> None:
@@ -175,15 +280,25 @@ class MarkdownRenderer:
         widget.config(state=tk.NORMAL)
         widget.delete('1.0', tk.END)
         in_block = False
-        
+        block_lang = ''
+        block_lines: List[str] = []
+
         for line in text.splitlines():
             s = line.strip()
             if s.startswith('```'):
+                if not in_block:
+                    block_lang = s[3:].strip()
+                    block_lines = []
+                    widget.insert(tk.END, '\n')
+                    label = block_lang if block_lang else 'code'
+                    widget.insert(tk.END, f' {label}\n', 'code_lang')
+                else:
+                    cls._highlight_block(widget, '\n'.join(block_lines) + '\n', block_lang)
+                    widget.insert(tk.END, '\n')
                 in_block = not in_block
-                widget.insert(tk.END, '\n')
                 continue
             if in_block:
-                widget.insert(tk.END, line + '\n', 'code')
+                block_lines.append(line)
                 continue
             if s.startswith('#### '):
                 widget.insert(tk.END, s[5:] + '\n', 'h4')
@@ -202,7 +317,7 @@ class MarkdownRenderer:
             else:
                 cls._render_inline(widget, line)
                 widget.insert(tk.END, '\n')
-                
+
         widget.config(state=tk.DISABLED)
 
 
@@ -258,7 +373,10 @@ class CodeCanvas(tk.Frame):
             padx=10, pady=10, spacing1=2,
         )
         self.text.pack(fill=tk.BOTH, expand=True)
-        
+
+        # IDE-style syntax colours on the editor background (no extra margins)
+        SyntaxHighlighter.configure_tags(self.text, int(self._font_code.cget('size')), Theme.TXT_BG)
+
         self._scrollbar_y.config(command=self._on_yview)
         self._scrollbar_x.config(command=self.text.xview)
 
@@ -292,11 +410,12 @@ class CodeCanvas(tk.Frame):
         self._line_numbers.config(state=tk.DISABLED)
         self._line_numbers.yview_moveto(self.text.yview()[0])
 
-    def set_code(self, code: str) -> None:
+    def set_code(self, code: str, name: Optional[str] = None) -> None:
         self.text.config(state=tk.NORMAL)
         self.text.delete('1.0', tk.END)
         if code:
-            self.text.insert('1.0', code)
+            lexer = SyntaxHighlighter.lexer_for(name=name, code=code)
+            SyntaxHighlighter.insert_highlighted(self.text, code, lexer)
         if not self._editable:
             self.text.config(state=tk.DISABLED)
         self.after_idle(self._refresh_line_numbers)
@@ -323,7 +442,7 @@ class App(tk.Tk):
         self._build_ui()
 
     def _setup_window(self) -> None:
-        self.title('Asystent Jakości Kodu')
+        self.title('Code Quality Assistant')
         self.geometry('1440x840')
         self.minsize(1000, 600)
         self.configure(bg=Theme.BG)
@@ -346,7 +465,7 @@ class App(tk.Tk):
 
         # Column 1 — Input Panel
         left_column = tk.Frame(paned_workspace, bg=Theme.BG)
-        self._create_header_label(left_column, 'Wklej kod do analizy').pack(anchor='w', pady=(0, 4))
+        self._create_header_label(left_column, 'Paste code to analyze').pack(anchor='w', pady=(0, 4))
         self.input_canvas = CodeCanvas(left_column, self._font_code, editable=True)
         self.input_canvas.pack(fill=tk.BOTH, expand=True)
         paned_workspace.add(left_column, minsize=250)
@@ -358,13 +477,13 @@ class App(tk.Tk):
         vertical_workspace.pack(fill=tk.BOTH, expand=True)
 
         analysis_frame = tk.Frame(vertical_workspace, bg=Theme.BG)
-        self._create_header_label(analysis_frame, 'Analiza architektoniczna').pack(anchor='w', pady=(0, 4))
+        self._create_header_label(analysis_frame, 'Architectural Analysis').pack(anchor='w', pady=(0, 4))
         self.analysis_text_area = self._create_scrollable_text(analysis_frame)
         MarkdownRenderer.configure_tags(self.analysis_text_area, self._font_ui)
         vertical_workspace.add(analysis_frame, minsize=80)
 
         summary_frame = tk.Frame(vertical_workspace, bg=Theme.BG)
-        self._create_header_label(summary_frame, 'Podsumowanie refaktoryzacji').pack(anchor='w', pady=(0, 4))
+        self._create_header_label(summary_frame, 'Refactoring Summary').pack(anchor='w', pady=(0, 4))
         self.summary_text_area = self._create_scrollable_text(summary_frame)
         MarkdownRenderer.configure_tags(self.summary_text_area, self._font_ui)
         vertical_workspace.add(summary_frame, minsize=60)
@@ -375,7 +494,7 @@ class App(tk.Tk):
         right_column = tk.Frame(paned_workspace, bg=Theme.BG)
         self._header_frame_right = tk.Frame(right_column, bg=Theme.BG)
         self._header_frame_right.pack(fill=tk.X, pady=(0, 4))
-        self._create_header_label(self._header_frame_right, 'Refaktoryzowany kod').pack(side=tk.LEFT)
+        self._create_header_label(self._header_frame_right, 'Refactored Code').pack(side=tk.LEFT)
 
         self.output_code_canvas = CodeCanvas(right_column, self._font_code, editable=False)
         self.output_code_canvas.pack(fill=tk.BOTH, expand=True)
@@ -407,7 +526,7 @@ class App(tk.Tk):
         action_bar.pack(side=tk.BOTTOM, fill=tk.X, padx=12, pady=(0, 12))
         
         self.btn_analyze = tk.Button(
-            action_bar, text='Analizuj', font=self._font_ui, cursor='hand2',
+            action_bar, text='Analyze', font=self._font_ui, cursor='hand2',
             bg=Theme.ACCENT, fg=Theme.BG, activebackground='#74c7ec',
             activeforeground=Theme.BG, relief=tk.FLAT, padx=20, pady=6,
             command=self._on_analyze_request,
@@ -418,7 +537,7 @@ class App(tk.Tk):
         self.lbl_status.pack(side=tk.LEFT, padx=14)
         
         self.btn_copy = tk.Button(
-            action_bar, text='Kopiuj kod', font=self._font_ui, cursor='hand2',
+            action_bar, text='Copy Code', font=self._font_ui, cursor='hand2',
             bg=Theme.TXT_BG, fg=Theme.FG, activebackground=Theme.BORDER_COLOR,
             activeforeground=Theme.FG, relief=tk.FLAT, padx=16, pady=6,
             command=self._on_copy_request,
@@ -460,7 +579,7 @@ class App(tk.Tk):
     def _on_file_select(self, target_name: str) -> None:
         for f in self._code_files:
             if f.name == target_name:
-                self.output_code_canvas.set_code(f.content)
+                self.output_code_canvas.set_code(f.content, f.name)
                 break
 
     def _set_status(self, msg: str, color: Optional[str] = None) -> None:
@@ -469,7 +588,7 @@ class App(tk.Tk):
     def _on_analyze_request(self) -> None:
         code = self.input_canvas.get_code()
         if not code:
-            messagebox.showwarning('Brak kodu', 'Wklej kod przed analizą.')
+            messagebox.showwarning('No Code', 'Paste code before analyzing.')
             return
             
         self.btn_analyze.config(state=tk.DISABLED)
@@ -478,7 +597,7 @@ class App(tk.Tk):
         self.output_code_canvas.set_code('')
         self._update_file_selector([])
         
-        self._set_status('Analizuję...', Theme.WARN)
+        self._set_status('Analyzing...', Theme.WARN)
         
         # Safe thread execution
         threading.Thread(
@@ -493,14 +612,14 @@ class App(tk.Tk):
             # Marshal GUI changes back to the main thread securely
             self.after(0, self._render_results, raw_response)
         except Exception as exc:
-            logging.exception("Błąd podczas przetwarzania potoku analizatora.")
+            logging.exception("Error during analysis pipeline processing.")
             self.after(0, self._handle_pipeline_failure, str(exc))
 
     def _render_results(self, raw_data: str) -> None:
         try:
             parsed = self._parser.parse(raw_data)
             
-            logging.info(f"Pomyślnie sparsowano dane. Liczba plików: {len(parsed.files)}")
+            logging.info(f"Successfully parsed response. File count: {len(parsed.files)}")
 
             MarkdownRenderer.render(self.analysis_text_area, parsed.analysis)
             
@@ -508,20 +627,23 @@ class App(tk.Tk):
             file_names = [f.name for f in parsed.files]
             self._update_file_selector(file_names)
             
-            default_code = parsed.files[0].content if parsed.files else ''
-            self.output_code_canvas.set_code(default_code)
+            default_file = parsed.files[0] if parsed.files else None
+            self.output_code_canvas.set_code(
+                default_file.content if default_file else '',
+                default_file.name if default_file else None,
+            )
 
             MarkdownRenderer.render(self.summary_text_area, parsed.summary)
             
-            self._set_status('Gotowe.', Theme.OK)
+            self._set_status('Done.', Theme.OK)
         except Exception as exc:
-            logging.exception("Błąd renderowania graficznego interfejsu.")
-            self._handle_pipeline_failure(f"Nieprawidłowy format wyjściowy: {exc}")
+            logging.exception("GUI rendering error.")
+            self._handle_pipeline_failure(f"Invalid output format: {exc}")
         finally:
             self.btn_analyze.config(state=tk.NORMAL)
 
     def _handle_pipeline_failure(self, error_message: str) -> None:
-        self._set_status(f'Błąd: {error_message}', Theme.ERR)
+        self._set_status(f'Error: {error_message}', Theme.ERR)
         self.btn_analyze.config(state=tk.NORMAL)
 
     def _on_copy_request(self) -> None:
@@ -529,7 +651,7 @@ class App(tk.Tk):
         if text:
             self.clipboard_clear()
             self.clipboard_append(text)
-            self._set_status('Skopiowano do schowka.', Theme.OK)
+            self._set_status('Copied to clipboard.', Theme.OK)
 
 
 if __name__ == '__main__':
