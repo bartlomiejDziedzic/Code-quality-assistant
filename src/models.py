@@ -1,3 +1,5 @@
+import bisect
+import logging
 import re
 from dataclasses import dataclass
 from typing import Callable, List, Optional
@@ -42,17 +44,20 @@ class ResponseParser:
         r'####\s+File\s+\d+:\s+`?([^`\n(]+?)`?(?:\s*\([^)]*\))?\s*\n'
     )
     CODE_BLOCK_RE = re.compile(r'```[\w]*\n(.*?)```', re.DOTALL)
-    SECTION_3_RE = re.compile(r'###\s+3\.[^\n]*\n(.*?)(?=###\s+4\.|$)', re.DOTALL)
-    SECTION_4_RE = re.compile(r'(###\s+4\.[^\n]*\n.*?)$', re.DOTALL)
+    # No capture group — used only to locate fence boundaries, not extract content
+    _CODE_FENCE_RE = re.compile(r'```[\w]*\n.*?```', re.DOTALL)
+    REFACTORED_RE = re.compile(r'###\s+4\.[^\n]*\n(.*?)(?=###\s+5\.|$)', re.DOTALL)
+    SUMMARY_RE = re.compile(r'(###\s+5\.[^\n]*\n.*?)$', re.DOTALL)
 
     def extract_files(self, content: str) -> List[RefactoredFile]:
-        # Skip FILE_HDR_RE matches that appear inside code blocks to avoid
-        # treating string literals in refactored code as file headers.
-        code_ranges = [(m.start(), m.end())
-                       for m in re.finditer(r'```[\w]*\n.*?```', content, re.DOTALL)]
+        fences = [(m.start(), m.end()) for m in self._CODE_FENCE_RE.finditer(content)]
+        fence_starts = [s for s, _ in fences]
+        fence_ends   = [e for _, e in fences]
 
+        # bisect exploits the sorted order that finditer already guarantees: O(log n) per check
         def _in_code(pos: int) -> bool:
-            return any(s <= pos < e for s, e in code_ranges)
+            i = bisect.bisect_right(fence_starts, pos) - 1
+            return i >= 0 and pos < fence_ends[i]
 
         headers = [m for m in self.FILE_HDR_RE.finditer(content) if not _in_code(m.start())]
         files: List[RefactoredFile] = []
@@ -70,16 +75,18 @@ class ResponseParser:
             code_match = self.CODE_BLOCK_RE.search(content)
             if code_match:
                 files.append(RefactoredFile(name='refactored_code', content=code_match.group(1).rstrip()))
+            else:
+                logging.warning("ResponseParser: no code blocks found in LLM output; output panel will be empty.")
 
         return files
 
     def parse(self, text: str) -> AnalysisResult:
-        s3_match = self.SECTION_3_RE.search(text)
-        s4_match = self.SECTION_4_RE.search(text)
+        refactored_match = self.REFACTORED_RE.search(text)
+        summary_match = self.SUMMARY_RE.search(text)
 
-        analysis = text[: s3_match.start() if s3_match else len(text)].strip()
-        files = self.extract_files(s3_match.group(1)) if s3_match else []
-        summary = s4_match.group(1).strip() if s4_match else ''
+        analysis = text[: refactored_match.start() if refactored_match else len(text)].strip()
+        files = self.extract_files(refactored_match.group(1)) if refactored_match else []
+        summary = summary_match.group(1).strip() if summary_match else ''
 
         return AnalysisResult(analysis=analysis, files=files, summary=summary)
 
