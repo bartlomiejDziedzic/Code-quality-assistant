@@ -1,25 +1,33 @@
 import logging
 import threading
 import tkinter as tk
-from typing import List, Optional
+from typing import Dict, List, Optional, Protocol, Tuple
 from tkinter import font, messagebox
 
-from models import Theme, RefactoredFile, CodeAnalysisService, ResponseParser
+from models import Theme, RefactoredFile, AnalysisResult, CodeAnalysisService, ResponseParser
 from renderers import MarkdownRenderer
 from widgets import CodeCanvas
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 
 
+class AnalysisServiceProtocol(Protocol):
+    def analyze(self, source_code: str) -> str: ...
+
+
 class App(tk.Tk):
-    def __init__(self, analyzer_service: CodeAnalysisService) -> None:
+    def __init__(
+        self,
+        analyzer_service: AnalysisServiceProtocol,
+        parser: Optional[ResponseParser] = None
+    ) -> None:
         super().__init__()
         self._analyzer_service = analyzer_service
-        self._parser = ResponseParser()
-        self._code_files: List[RefactoredFile] = []
+        self._parser = parser or ResponseParser()
+        self._code_files: Dict[str, RefactoredFile] = {}
 
         self._setup_window()
-        self._initialize_fonts()
+        self._initialize_resources()
         self._build_ui()
 
     def _setup_window(self) -> None:
@@ -28,10 +36,12 @@ class App(tk.Tk):
         self.minsize(1000, 600)
         self.configure(bg=Theme.BG)
 
-    def _initialize_fonts(self) -> None:
+    def _initialize_resources(self) -> None:
+        # Tk allocates a native font handle per Font object; pre-creating avoids handle accumulation
         self._font_ui = font.Font(family='Segoe UI', size=10)
         self._font_ui_bold = font.Font(family='Segoe UI', size=10, weight='bold')
         self._font_code = font.Font(family='Consolas', size=11)
+        self._font_code_small = font.Font(family='Consolas', size=9)
 
     def _build_ui(self) -> None:
         self._file_var = tk.StringVar()
@@ -69,9 +79,9 @@ class App(tk.Tk):
         paned_workspace.add(middle_column, minsize=280)
 
         right_column = tk.Frame(paned_workspace, bg=Theme.BG)
-        self._header_frame_right = tk.Frame(right_column, bg=Theme.BG)
-        self._header_frame_right.pack(fill=tk.X, pady=(0, 4))
-        self._create_header_label(self._header_frame_right, 'Refactored Code').pack(side=tk.LEFT)
+        self._output_header_frame = tk.Frame(right_column, bg=Theme.BG)
+        self._output_header_frame.pack(fill=tk.X, pady=(0, 4))
+        self._create_header_label(self._output_header_frame, 'Refactored Code').pack(side=tk.LEFT)
 
         self.output_code_canvas = CodeCanvas(right_column, self._font_code, editable=False)
         self.output_code_canvas.pack(fill=tk.BOTH, expand=True)
@@ -129,13 +139,13 @@ class App(tk.Tk):
         if len(names) > 1:
             self._file_var.set(names[0])
             option_menu = tk.OptionMenu(
-                self._header_frame_right, self._file_var, *names,
+                self._output_header_frame, self._file_var, *names,
                 command=self._on_file_select
             )
             option_menu.configure(
                 bg=Theme.TXT_BG, fg=Theme.FG, activebackground=Theme.BORDER_COLOR,
                 activeforeground=Theme.FG, relief=tk.FLAT,
-                font=font.Font(family='Consolas', size=9),
+                font=self._font_code_small,
                 highlightthickness=0
             )
             option_menu['menu'].configure(
@@ -146,18 +156,16 @@ class App(tk.Tk):
             self._file_selector = option_menu
         elif len(names) == 1:
             lbl = tk.Label(
-                self._header_frame_right, text=f'— {names[0]}',
-                bg=Theme.BG, fg=Theme.FG2,
-                font=font.Font(family='Consolas', size=9)
+                self._output_header_frame, text=f'— {names[0]}',
+                bg=Theme.BG, fg=Theme.FG2, font=self._font_code_small
             )
             lbl.pack(side=tk.LEFT, padx=(6, 0))
             self._file_selector = lbl
 
     def _on_file_select(self, target_name: str) -> None:
-        for f in self._code_files:
-            if f.name == target_name:
-                self.output_code_canvas.set_code(f.content, f.name)
-                break
+        selected_file = self._code_files.get(target_name)
+        if selected_file:
+            self.output_code_canvas.set_code(selected_file.content, selected_file.name)
 
     def _set_status(self, msg: str, color: Optional[str] = None) -> None:
         self.lbl_status.config(text=msg, fg=color or Theme.FG2)
@@ -185,28 +193,35 @@ class App(tk.Tk):
             logging.exception("Error during analysis pipeline processing.")
             self.after(0, self._handle_pipeline_failure, str(exc))
 
+    def _parse_to_ui_state(
+        self, raw_data: str
+    ) -> Tuple[AnalysisResult, Dict[str, RefactoredFile], List[str], Optional[RefactoredFile]]:
+        parsed = self._parser.parse(raw_data)
+        logging.info("Successfully parsed response. File count: %d", len(parsed.files))
+        code_files = {f.name: f for f in parsed.files}
+        file_names = list(code_files.keys())
+        default_file = parsed.files[0] if parsed.files else None
+        return parsed, code_files, file_names, default_file
+
     def _render_results(self, raw_data: str) -> None:
         try:
-            parsed = self._parser.parse(raw_data)
-            logging.info(f"Successfully parsed response. File count: {len(parsed.files)}")
+            parsed, code_files, file_names, default_file = self._parse_to_ui_state(raw_data)
 
             MarkdownRenderer.render(self.analysis_text_area, parsed.analysis)
-
-            self._code_files = parsed.files
-            file_names = [f.name for f in parsed.files]
+            self._code_files = code_files
             self._update_file_selector(file_names)
-
-            default_file = parsed.files[0] if parsed.files else None
             self.output_code_canvas.set_code(
                 default_file.content if default_file else '',
                 default_file.name if default_file else None,
             )
-
             MarkdownRenderer.render(self.summary_text_area, parsed.summary)
             self._set_status('Done.', Theme.OK)
-        except Exception as exc:
-            logging.exception("GUI rendering error.")
+        except (ValueError, AttributeError) as exc:
+            logging.exception("Failed to parse LLM response.")
             self._handle_pipeline_failure(f"Invalid output format: {exc}")
+        except Exception as exc:
+            logging.exception("Unexpected GUI rendering error.")
+            self._handle_pipeline_failure(f"Unexpected error: {exc}")
         finally:
             self.btn_analyze.config(state=tk.NORMAL)
 
@@ -217,9 +232,14 @@ class App(tk.Tk):
     def _on_copy_request(self) -> None:
         text = self.output_code_canvas.get_code()
         if text:
-            self.clipboard_clear()
-            self.clipboard_append(text)
-            self._set_status('Copied to clipboard.', Theme.OK)
+            try:
+                # clipboard_clear raises TclError on Wayland and locked Windows sessions
+                self.clipboard_clear()
+                self.clipboard_append(text)
+                self._set_status('Copied to clipboard.', Theme.OK)
+            except tk.TclError as err:
+                logging.error("Failed to copy text to system clipboard: %s", err)
+                self._set_status('Clipboard error. Try copying manually.', Theme.ERR)
 
 
 if __name__ == '__main__':
